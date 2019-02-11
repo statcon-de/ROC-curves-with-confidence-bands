@@ -1,0 +1,1207 @@
+/* Script Copyright by Statcon, Germany.*/
+
+Clear Globals();
+Clear Log();
+//generate dialog box
+
+r = Column Dialog(
+	eval_col = ColList( "Evaluation", Max Col( 1 ) ),
+	roc_cols = ColList( "ROC Columns", Max Col( 2 ) ),                                      		
+
+	HList( VList( "Repetitions (bootstrap)", rep = EditNumber( 10 ) ) ),        
+
+);
+
+ddt = Current Data Table();
+
+//evaluate dialog box
+Remove From( r, 4 );
+Eval List( r );
+fraction = 1; 
+
+eval_abs_orig = Column( eval_col ) << get values;
+
+N_ROC_cols = N Items( roc_cols );
+If( (Column( eval_col ) << getdatatype) == "Numeric",
+	N = N Rows( eval_abs_orig ),
+	N = N Items( eval_abs_orig )
+);
+
+mylist = {};  // mylist: different elements of evaluation column
+For( i = 1, i <= N, i++,
+	If( Contains( mylist, eval_abs_orig[i] ) == 0,
+		mylist = Insert( mylist, eval_abs_orig[i] )
+	)
+);
+
+// select positive level - dialog
+
+dlg = Dialog( "Select 'positive' level!", vlist( selection = List Box( mylist ), Button( "OK" ) ) );
+Remove From( dlg, 2 );
+pos_lev = Eval List( dlg )[1][1];
+
+eval_abs = {};
+
+For( i = 1, i <= N, i++,
+	If( eval_abs_orig[i] == pos_lev,
+		eval_abs = Insert( eval_abs, "TP" ),
+		eval_abs = Insert( eval_abs, "TN" )
+	)
+);
+
+
+sum_TN = 0;
+For( i = 1, i <= N, i++,
+	If( eval_abs[i] == "TN",
+		sum_TN = sum_TN + 1
+	)
+);
+sum_TP = N - sum_TN;
+
+show_kolmo = 0;
+show_boot = 0;
+show_bino = 0;
+
+// ROC Curve
+
+sign = J( 1, N_ROC_cols, -1 );
+FP = J( N_ROC_cols, N + 1, . );
+TP = J( N_ROC_cols, N + 1, . );
+sorted_data = J( N, N_ROC_cols, . );
+
+// lift curve
+
+lift = J( N_ROC_cols, N + 1, . );
+lower = J( 100, 10 * N_ROC_cols, . );
+upper = J( 100, 10 * N_ROC_cols, . );
+lift_low = J( N_ROC_cols, 100, . );
+lift_up = J( N_ROC_cols, 100, . );
+portion_low = J( N_ROC_cols, 100, . );
+portion_up = J( N_ROC_cols, 100, . );
+
+// bootstrap CI
+
+upper_x = J( N_ROC_cols, N + 1, . );
+lower_x = J( N_ROC_cols, N + 1, . );
+upper_y = J( N_ROC_cols, N + 1, . );
+lower_y = J( N_ROC_cols, N + 1, . );
+
+// binomial CI
+
+upper_bi_x = J( 10 * N_ROC_cols, N + 1, . );
+lower_bi_x = J( 10 * N_ROC_cols, N + 1, . );
+upper_bi_y = J( 10 * N_ROC_cols, N + 1, . );
+lower_bi_y = J( 10 * N_ROC_cols, N + 1, . );
+
+AUC = J( 1, N_ROC_cols, 0 );
+pAUC_abs = J( 1, N_ROC_cols, 0 );
+pAUC_rel = J( 1, N_ROC_cols, 0 );
+AUC_up = J( 1, N_ROC_cols, 0 );
+pAUC_lo = J( 1, N_ROC_cols, 0 );
+pAUC_up = J( 1, N_ROC_cols, 0 );
+AUC_lo = J( 1, N_ROC_cols, 0 );
+AUC_bi_up = J( 1, N_ROC_cols, 0 );
+AUC_bi_lo = J( 1, N_ROC_cols, 0 );
+AUC_sig = J( 1, N_ROC_cols, 0 );
+pAUC_sig = J( 1, N_ROC_cols, 0 );
+equal_stat = 0;//J( 1, 2, 0 );
+equal_p = 0; //J( 1, 2, 0 );
+string_null_hypos = {"ROC curves are equal"};
+fpr_test = 0.5;
+fpr_test_char = "0.5";
+pAUC_compare_stats = 0;
+pAUC_compare_p = 0;
+col_names = {};
+
+// cutoff values
+
+cutoff_diag = J( 1, N_ROC_cols, 0 );
+index_diag = J( 1, N_ROC_cols, 0 );
+value_diag = J( 1, N_ROC_cols, 0 );
+cutoff_min = J( 1, N_ROC_cols, 0 );
+index_min = J( 1, N_ROC_cols, 0 );
+value_min = J( 1, N_ROC_cols, 0 );
+One_spec_min = J( 1, N_ROC_cols, 0 );
+sens_min = J( 1, N_ROC_cols, 0 );
+One_spec_diag = J( 1, N_ROC_cols, 0 );
+sens_diag = J( 1, N_ROC_cols, 0 );
+One_spec_new = J( 1, N_ROC_cols, 0 );
+sens_new = J( 1, N_ROC_cols, 0 );
+
+// weights
+
+w_fp_rel = 1;
+w_fn_rel = 1;
+
+If(
+	sum_TN >= sum_TP,
+		w_fp = 1;
+		w_fn = sum_TN / sum_TP * w_fp_rel / w_fn_rel;,
+	w_fn = 1;
+	w_fp = sum_TP / sum_TN * w_fn_rel / w_fp_rel;,
+);
+
+w_fp_abs_high = Round( 10 * w_fp ) + 1;
+
+w_fn_abs_high = Round( 10 * w_fn ) + 1;
+
+w_fp_char = Char( Round( w_fp, 3 ) );
+w_fn_char = Char( Round( w_fn, 3 ) );
+
+b = J( 1, N_ROC_cols, 0 );
+b_new = J( 1, N_ROC_cols, 0 );
+
+cutoff_new = cutoff_diag;
+index_new = index_diag;
+value_new = value_diag;
+slope = J( 1, N_ROC_cols, 1 );
+xdot = b;
+
+alpha = 0.05;
+alpha_proc = 5;
+alpha_char = "0.05";
+alpha_slider = 0.05;
+
+//// values for pAUC  //////////////////////
+
+e_one = 0.3;
+e_two = 0.7;
+x_1 = 0.3;
+x_2 = 0.7;
+b_pos = 0.1;
+w_fpr1_char = "0.3";
+w_fpr2_char = "0.7";
+
+// renew: function for recalculating pAUC
+renew = Function( {one, two},
+	OK = 0;
+	x_1 = Min( one, two );
+	x_2 = Max( one, two );
+	For( s = 1, s <= N_ROC_cols, s++,
+		pAUC_abs[s] = 0;
+		pAUC_lo[s] = 0;
+		pAUC_up[s] = 0;
+		
+		// calculate pAUC_abs 
+		For( i = 2, i <= N + 1, i++,
+			pAUC_abs[s] = pAUC_abs[s] + (FP[s, i] - FP[s, i - 1]) * TP[s, i] * Eval( x_1 < FP[s, i] <= x_2 )
+		);
+		
+		pAUC_up[s] = pAUC_abs[s] + 1.96 * Sqrt( func_var_p( x_1 + 0.001, x_2 - 0.001, para[0, s] ) );
+		pAUC_lo[s] = pAUC_abs[s] - 1.96 * Sqrt( func_var_p( x_1 + 0.001, x_2 - 0.001, para[0, s] ) );
+		
+		Area_min = 0.5 * (x_2 ^ 2 - x_1 ^ 2);
+		Area_max = x_2 - x_1;
+		pAUC_rel = 0.5 * (1 + ((pAUC_abs - Area_min) / (Area_max - Area_min)));
+		pAUC_sig[s] = 2 * (1 - Normal Distribution(
+			Abs( (pAUC_abs[s] - 0.5 * (x_2 - x_1) * (x_1 + x_2)) / Sqrt( func_var_p( x_1 + 0.001, x_2 - 0.001, para[0, s] ) ) )
+		));
+	);
+
+	If( N_ROC_cols == 2,
+		z_value = (pAUC_abs[1] - pAUC_abs[2]) / Sqrt(
+			func_var_p( one + 0.001, two - 0.001, para[0, 1] ) + func_var_p( one + 0.001, two - 0.001, para[0, 2] )
+		);
+		pAUC_compare_p = 2 * (1 - Normal Distribution( Abs( z_value ) ));
+		tb_pcol1 << delete;
+		tb_pcol1 = Number Col Box( "Test Statistic", {Abs( z_value )} );
+		tb_pAUC << append( tb_pcol1 );
+		tb_pcol2 << delete;
+		tb_pcol2 = Number Col Box( "p-value", {pAUC_compare_p} );
+		tb_pAUC << append( tb_pcol2 );
+	);
+
+
+
+	tb_col1 << delete;
+	tb_col1 = Number Col Box( "pAUC rel", pAUC_rel );
+	tb_weig << append( tb_col1 );
+	tb_col2 << delete;
+	tb_col2 = Number Col Box( "pAUC abs", pAUC_abs );
+	tb_weig << append( tb_col2 );
+	tb_col3 << delete;
+	tb_col3 = Number Col Box( "CI low", pAUC_lo );
+	tb_weig << append( tb_col3 );
+	tb_col4 << delete;
+	tb_col4 = Number Col Box( "CI up", pAUC_up );
+	tb_weig << append( tb_col4 );
+	/*tb_col5 << delete;
+	tb_col5 = Number Col Box( "Signif. Prob", pAUC_sig );
+	tb_weig << append( tb_col5 );*/
+	OK = 1;
+);
+
+// calulate_cutoffs: recalculates the cutt-off values
+calculate_cutoffs = Function( {w_fp_loc, w_fn_loc},
+	OK = 0;
+	For( i = 1, i <= N_ROC_cols, i++,
+		cutoff_new[i] = Max( w_fn * TP[i, 0] * sum_TP - w_fp * FP[i, 0] * sum_TN );
+		index_new[i] = Loc Max( w_fn * TP[i, 0] * sum_TP - w_fp * FP[i, 0] * sum_TN );
+		value_new[i] = sorted_data[index_new[i], i];
+		slope[i] = ((w_fp / w_fn) / (sum_TP / sum_TN));
+		b_new[i] = TP[i, index_new[i]] - slope[i] * FP[i, index_new[i]];
+		xdot[i] = (1 - b_new[i]) / slope[i];
+		One_spec_new[i] = FP[i, index_new[i]];
+		sens_new[i] = TP[i, index_new[i]];
+	);
+);
+
+//renew_weights: redisplays the tables boxes with cutt-off values
+renew_weights = Function( {w_fp_rel_loc, w_fn_rel_loc},
+	OK = 0;
+	show(w_fp_rel_loc,w_fn_rel_loc);
+	a = w_fp_rel_loc / w_fn_rel_loc * sum_tn / sum_tp;
+	If( a >= 1,
+		w_fp = a;
+		w_fn = 1;
+	,
+		w_fn = 1 / a;
+		w_fp = 1;
+	);
+	
+// redisplay table box tb_weighted
+	col1 << delete;
+	col1 = Number Col Box( "Index Value", value_new );
+	tb_weighted << append( col1 );
+	col2 << delete;
+	col2 = Number Col Box( "1-Specificity", One_spec_new );
+	tb_weighted << append( col2 );
+	col3 << delete;
+	col3 = Number Col Box( "Sensitivity", sens_new );
+	tb_weighted << append( col3 );
+	col4 << delete;
+	col4 = Number Col Box( "Slope", slope );
+	tb_weighted << append( col4 );
+	col5 << delete;
+	col5 = Number Col Box( "Row", index_new );
+	tb_weighted << append( col5 );
+	
+// redisplay table box tb_rel
+	rel_col1 << delete;
+	rel_col1 = Number Col Box( "Weigth FP abs.", {w_fp} );
+	tb_rel << append( rel_col1 );
+	rel_col2 << delete;
+	rel_col2 = Number Col Box( "Weigth FN abs.", {w_fn} );
+	tb_rel << append( rel_col2 );
+	rel_col3 << delete;
+	rel_col3 = Number Col Box( "Slope", {slope[1]} );
+	tb_rel << append( rel_col3 );
+	w_fp_char = Char( Round( w_fp_rel, 3 ) );
+	w_fn_char = Char( Round( w_fn_rel, 3 ) );
+	teb_fp << set Text( w_fp_char );
+	teb_fn << set Text( w_fn_char );
+	OK = 1;
+);
+
+// function that calculates Var(AUC_{ee1 < FPR < ee2}), cc is the vector with estimates
+func_var_p = Function( {ee1, ee2, cc},
+	hh = J( 1, 2, 0 );
+	aa = cc[1];
+	bb = cc[2];
+	var_a = cc[3];
+	var_b = cc[4];
+	cov_ab = cc[5];
+	hh[1] = (Normal Quantile( ee1 ) + aa * bb / (1 + bb ^ 2)) * Sqrt( 1 + bb ^ 2 );
+	hh[2] = (Normal Quantile( ee2 ) + aa * bb / (1 + bb ^ 2)) * Sqrt( 1 + bb ^ 2 );
+	ff = Exp( (-aa ^ 2) / (2 * (1 + bb ^ 2)) ) / (Sqrt( 2 * 3.141 * (1 + bb ^ 2) )) * (Normal Distribution( hh[2] ) -
+	Normal Distribution( hh[1] ));
+	gg = Exp( (-aa ^ 2) / (2 * (1 + bb ^ 2)) ) / (2 * 3.141 * (1 + bb ^ 2)) * (Exp( -0.5 * hh[1] ^ 2 ) - Exp( -0.5 * hh[2] ^ 2 ))
+	 - -(aa * bb * Exp( (-aa ^ 2) / (2 * (1 + bb ^ 2)) )) / (Sqrt( 2 * 3.141 * (1 + bb ^ 2) ^ 3 )) * (Normal Distribution( hh[2] )
+	 - Normal Distribution( hh[1] ));
+	var_p = ff ^ 2 * var_a + gg ^ 2 * var_b + 2 * ff * gg * cov_ab;
+	var_p;
+);
+
+
+para = J( 5, N_ROC_cols, 0 );
+
+// begin of big loop: calculate all
+
+For( s = 1, s <= N_ROC_cols, s++,                                     
+
+	Current Data Table( ddt );
+	nname = Column( ROC_cols[s] ) << get Name;
+	index_a = Column( ROC_cols[s] ) << get values;
+	
+	//do the fit
+	Summarize(
+		a = by( Column( eval_col ) ),
+		b = Mean( Column( ROC_cols[s] ) ),
+		c = Std Dev( Column( ROC_cols[s] ) ),
+		d = Count( Column( ROC_cols[s] ) )
+	);
+	para[1, s] = (b[2] - b[1]) / c[2];
+	para[2, s] = c[1] / c[2];
+	para[3, s] = (d[2] * (para[1, s] ^ 2 + 2) + 2 * d[1] * para[2, s] ^ 2) / (2 * d[1] * d[2]);
+	para[4, s] = ((d[1] + d[2]) * para[2, s] ^ 2) / (2 * d[1] * d[2]);
+	para[5, s] = (para[1, s] * para[2, s]) / (2 * d[1]);
+
+	col_names = Insert( col_names, nname );
+	Summarize( a_groups = By( Column( eval_col ) ), grouped_mean = Mean( Column( ROC_cols[s] ) ) );
+	pos = Contains( a_groups, pos_lev );
+	// decide if true posives have larger index mean than true) negatives.
+	If( grouped_mean[pos] < Max( grouped_mean ),
+		sign[s] = 1
+	);
+	Ra = Rank( sign[s] * index_a );
+	Rd = Rank( index_a );
+	sorted_data[0, s] = index_a[Ra];
+	index_a = index_a[Ra];
+	eval_a = eval_abs[Ra];
+
+/************** calculate ROC-curves *********/
+	
+	func_ROC_logistic = Function( {index, evalu},         
+
+		sum_TN_log = 0;
+		For( i = 1, i <= N, i++,
+			If( evalu[i] == "TN",
+				sum_TN_log = sum_TN_log + 1
+			)
+		);
+		sum_TP_log = N - sum_TN_log;
+
+		est_log = J( 1, N, "TN" );
+		TN_log = J( 1, N + 1, . );
+		FN_log = J( 1, N + 1, . );
+		TP_log = J( 1, N + 1, . );
+		FP_log = J( 1, N + 1, . );
+
+		TN_log[1] = sum_TN_log;
+		FP_log[1] = sum_TN_log - TN_log[1]; 	/* = 0 */
+		TP_log[1] = 0;
+		FN_log[1] = sum_TP_log - TP_log[1];
+
+
+		For( i = 2, i <= N + 1, i++,
+			If( evalu[i - 1] == "TN",
+				TN_log[i] = TN_log[i - 1] - 1;
+				FP_log[i] = FP_log[i - 1] + 1;
+				TP_log[i] = TP_log[i - 1];
+				FN_log[i] = FN_log[i - 1];
+			,
+				TN_log[i] = TN_log[i - 1];
+				FP_log[i] = FP_log[i - 1];
+				TP_log[i] = TP_log[i - 1] + 1;
+				FN_log[i] = FN_log[i - 1] - 1;
+			)
+		);
+
+		FP_log = FP_log / sum_TN_log;
+		TP_log = TP_log / sum_TP_log;
+		V Concat( FP_log, TP_log );
+	);
+
+	ma_ROC_log = func_ROC_logistic( index_a, eval_a );
+	FP[s, 0] = ma_roc_log[1, 0];
+	TP[s, 0] = ma_roc_log[2, 0];
+
+/************* calculate bootstrap-CIs *******/
+
+	func_bootstrap_vec = Function( {index, eval, frac, reps},          
+
+		N = N Rows( index );
+		fr = frac;
+		N_boot = Floor( N * fr );
+		evalnum = J( 1, N, . );
+		bigmatrix_FP = J( N_boot + 1, 1, . );
+		bigmatrix_TP = J( N_boot + 1, 1, . );
+
+		For( i = 1, i <= N, i++,
+			If( eval[i] == "TP",
+				evalnum[i] = 1,
+				evalnum[i] = 0
+			)
+		);
+
+
+		For( k = 1, k <= reps, k++,          
+	
+			index_boot = [];
+			eval_boot = [];
+			freque = J( 1, N, 0 );
+
+			For( i = 1, i <= N, i++,
+				boot_sample = Floor( Random Uniform( 1, N + 1 ) );
+				freque[boot_sample] = freque[boot_sample] + 1;
+			);
+		
+			For( i = 1, i <= N, i++,
+				For( j = 1, j <= freque[i], j++,
+					index_boot = index_boot || index[i];
+					eval_boot = eval_boot || evalnum[i];
+				)
+			);
+
+			sum_TN_boot = 0;
+			For( i = 1, i <= N_boot, i++,
+				If( eval_boot[i] == 0,
+					sum_TN_boot = sum_TN_boot + 1
+				)
+			);
+			sum_TP_boot = N_boot - sum_TN_boot;
+
+			est = J( 1, N_boot, 0 );
+			TN_boot = J( 1, N_boot + 1, . );
+			FN_boot = J( 1, N_boot + 1, . );
+			TP_boot = J( 1, N_boot + 1, . );
+			FP_boot = J( 1, N_boot + 1, . );
+
+			TN_boot[1] = sum_TN_boot;
+			FP_boot[1] = sum_TN_boot - TN_boot[1]; 	/* = 0 */
+			TP_boot[1] = 0;
+			FN_boot[1] = sum_TP_boot - TP_boot[1];
+
+
+			For( i = 2, i <= N_boot + 1, i++,
+				If( eval_boot[i - 1] == 0,
+					TN_boot[i] = TN_boot[i - 1] - 1;
+					FP_boot[i] = FP_boot[i - 1] + 1;
+					TP_boot[i] = TP_boot[i - 1];
+					FN_boot[i] = FN_boot[i - 1];
+				,
+					TN_boot[i] = TN_boot[i - 1];
+					FP_boot[i] = FP_boot[i - 1];
+					TP_boot[i] = TP_boot[i - 1] + 1;
+					FN_boot[i] = FN_boot[i - 1] - 1;
+				)
+			);
+
+			FP_boot = FP_boot / sum_TN_boot;
+			TP_boot = TP_boot / sum_TP_boot;
+			bigmatrix_FP = bigmatrix_FP || FP_boot`;
+			bigmatrix_TP = bigmatrix_TP || TP_boot`;
+	
+		);
+
+		curves = J( 100, reps, . );
+
+		ma_huge = V Concat( bigmatrix_FP, bigmatrix_TP );
+		For( j = 2, j <= reps + 1, j++,
+			quant = 0.01;
+			ind = 1;
+			For( i = 1, i <= N_boot + 1, i++,
+				If( bigmatrix_FP[i, j] >= quant,          
+			 /*show(ind,j,i-1+N_boot+1);*/
+					curves[ind,
+					j - 1] = ma_huge[i - 1 + (N_boot + 1),
+					j];
+					i = i - 1; // for next step at same point
+					If( quant < 1,
+						quant = quant + 0.01;
+						ind = ind + 1;
+					,
+						i = N_boot + 2
+					);
+				)
+			);
+			curves[100, j - 1] = 1;
+		);
+
+		ma_confid = J( 100, 20, . );
+		For( j = 1, j <= 10, j++,
+			For( i = 1, i <= 100, i++,
+				ma_confid[i, j] = Quantile( j * 1 / 100, curves[i, 0] );
+				ma_confid[i, j + 10] = Quantile( 1 - j * 1 / 100, curves[i, 0] );
+			)
+		);
+		ma_confid;
+	);
+
+	ma_ROC_log_confid_boot = func_bootstrap_vec( index_a, eval_a, fraction, rep );
+	
+	For( j = 1, j <= 10, j++,
+		lower[0, 10 * (s - 1) + j] = ma_roc_log_confid_boot[0, j];
+		upper[0, 10 * (s - 1) + j] = ma_roc_log_confid_boot[0, j + 10];
+	);	
+
+/*********** end bootstrap-CIs ************/
+
+/********* calculate binomial CIs ********/
+
+	FP_abs = Round( FP[s, 0] * sum_TN, 0 );
+	TP_abs = Round( TP[s, 0] * sum_TP, 0 );
+
+	For( j = 1, j <= 10, j++,
+		al = j / 100;
+		For( i = 1, i <= N, i++,
+			upper_bi_x[10 * (s - 1) + j, i] = Beta Quantile( 1 - al / 2, FP_abs[i] + 1, sum_TN - FP_abs[i] );
+			lower_bi_x[10 * (s - 1) + j, i] = Max( 0, Beta Quantile( al / 2, FP_abs[i], sum_TN - FP_abs[i] + 1 ) );
+			upper_bi_y[10 * (s - 1) + j, i] = Min( Beta Quantile( 1 - al / 2, TP_abs[i] + 1, sum_TP - TP_abs[i] ), 1 );
+			lower_bi_y[10 * (s - 1) + j, i] = Beta Quantile( al / 2, TP_abs[i], sum_TP - TP_abs[i] + 1 );
+		);
+	);
+
+/**** calculate kolmogorov CIs, assuming sample size > 35********/
+        
+	xvalue = FP[s,
+	0];
+	yvalue = TP[s, 0];
+
+	const = Match( alpha, 0.2, 1.07, 0.15, 1.14, 0.1, 1.22, 0.05, 1.36, 0.01, 1.63, 1.36 );
+
+	vert = const / Sqrt( sum_TP );
+	horiz = const / Sqrt( sum_TN );
+
+	For( i = 1, i <= N + 1, i++,
+		upper_x[s, i] = Max( xvalue[i] - horiz, 0 );
+		lower_x[s, i] = Min( 1, xvalue[i] + horiz );
+		upper_y[s, i] = Min( 1, yvalue[i] + vert );
+		lower_y[s, i] = Max( 0, yvalue[i] - vert );
+	);
+
+/* end of kolmogorov CIs */
+
+/******* Calculate area under curve (AUC) boot *********/
+
+	For( i = 2, i <= N + 1, i++,
+		AUC[s] = AUC[s] + (FP[s, i] - FP[s, i - 1]) * TP[s, i]
+	);
+
+	For( i = 1, i <= 100, i++,
+		AUC_up[s] = AUC_up[s] + 0.01 * upper[i, 10 * (s - 1) + 5];
+		AUC_lo[s] = AUC_lo[s] + 0.01 * lower[i, 10 * (s - 1) + 5];
+	);
+
+/******* Calculate area under curve (AUC) binomi *********/
+
+	AUC_bi_up[s] = AUC[s] + 1.96 * Sqrt( func_var_p( 0 + 0.001, 1 - 0.001, para[0, s] ) );
+	AUC_bi_lo[s] = AUC[s] - 1.96 * Sqrt( func_var_p( 0 + 0.001, 1 - 0.001, para[0, s] ) );
+
+
+/******* end AUC ********************************/
+
+/**** calculate Cutoff values *****************/
+
+	cutoff_diag[s] = Max( TP[s, 0] - FP[s, 0] );
+	index_diag[s] = Loc Max( TP[s, 0] - FP[s, 0] );
+	value_diag[s] = index_a[index_diag[s]];
+	One_spec_diag[s] = FP[s, index_diag[s]];
+	sens_diag[s] = TP[s, index_diag[s]];
+
+	cutoff_min[s] = Min( (1 - TP[s, 0]) :* (1 - TP[s, 0]) + FP[s, 0] :* FP[s, 0] );
+	index_min[s] = Loc Min( (1 - TP[s, 0]) :* (1 - TP[s, 0]) + FP[s, 0] :* FP[s, 0] );
+	value_min[s] = index_a[index_min[s]];
+	One_spec_min[s] = FP[s, index_min[s]];
+	sens_min[s] = TP[s, index_min[s]];
+
+	cutoff_new[s] = Max( w_fn * TP[s, 1 :: N] * sum_TP - w_fp * FP[s, 1 :: N] * sum_TN );
+	index_new[s] = Loc Max( w_fn * TP[s, 1 :: N] * sum_TP - w_fp * FP[s, 1 :: N] * sum_TN );
+	value_new[s] = sorted_data[index_new[s], s];
+	One_spec_new[s] = FP[s, index_new[s]];
+	sens_new[s] = TP[s, index_new[s]];
+
+	slope[s] = ((w_fp / w_fn) / (sum_TP / sum_TN));
+	b_new[s] = TP[s, index_new[s]] - slope[s] * FP[s, index_new[s]];
+	xdot[s] = (1 - b_new[s]) / slope[s];
+
+	
+	// calculate initial pAUC 
+	pAUC_abs[s] = 0;
+	For( i = 2, i <= N + 1, i++,
+		pAUC_abs[s] = pAUC_abs[s] + (FP[s, i] - FP[s, i - 1]) * TP[s, i] * Eval( 0.3 < FP[s, i] <= 0.7 )
+	);
+	Area_min = 0.5 * (0.7 ^ 2 - 0.3 ^ 2);
+	Area_max = 0.7 - 0.3;
+	pAUC_rel = 0.5 * (1 + ((pAUC_abs - Area_min) / (Area_max - Area_min)));
+	
+	
+	pAUC_up[s] = pAUC_abs[s] + 1.96 * Sqrt( func_var_p( 0.3 + 0.001, 0.7 - 0.001, para[0, s] ) );
+	pAUC_lo[s] = pAUC_abs[s] - 1.96 * Sqrt( func_var_p( 0.3 + 0.001, 0.7 - 0.001, para[0, s] ) );
+	
+		//pAUC_up[s] = pAUC_up[s] + 0.01 * upper[i, 10 * (s - 1) + 5] * Eval( 0.3 < i * 0.01 <= 0.7 + 0.01 );
+	//pAUC_lo[s] = pAUC_lo[s] + 0.01 * lower[i, 10 * (s - 1) + 5] * Eval( 0.3 + 0.01 < i * 0.01 < 0.7 );
+	
+	pAUC_sig[s] = 2 * (1 - Normal Distribution(
+		Abs( (pAUC_abs[s] - 0.4) / Sqrt( func_var_p( 0.3 + 0.001, 0.7 - 0.001, para[0, s] ) ) )
+	));
+		
+); //end of big For-loop 
+
+
+//calculate initial test statistics
+
+If( N_ROC_cols == 2,
+	pAUC_compare_stats = (pAUC_abs[1] - pAUC_abs[2]) / Sqrt(
+		func_var_p( 0.3 + 0.001, 0.7 - 0.001, para[0, 1] ) + func_var_p( 0.3 + 0.001, 0.7 - 0.001, para[0, 2] )
+	);
+	pAUC_compare_p = 2 * (1 - Normal Distribution( Abs( pAUC_compare_stats ) ));
+	equal_stat = ((para[1,
+	1] - para[1,
+	2]) ^ 2 * (para[4,
+	1] + para[4,
+	2]) + (para[2,
+	1] - para[2,
+	2]) ^ 2 * (para[3,
+	1] + para[3,
+	2]) - 2 * (para[1,
+	1] - para[1,
+	2]) * (para[2,
+	1] - para[2,
+	2]) * (para[5,
+	1] + para[5,
+	2])) / ((para[4,
+	1] + para[4,
+	2]) * (para[3,
+	1] + para[3,
+	2]) - (para[5,
+	1] + para[5,
+	2]) ^ 2);
+	equal_p = 2 * (1 - ChiSquare Distribution( equal_stat, 2 ));
+);
+
+x_lift = Index( 0.01, 1, 0.01 );
+xvalues = Index( 0.00, 1, 0.01 );
+lower = J( 1, 10 * N_ROC_cols, 0 ) |/ lower;
+upper = J( 1, 10 * N_ROC_cols, 0 ) |/ upper;
+
+portion = (FP * sum_TN + TP * sum_TP) / N;
+
+// begin graphical display
+
+rocwin = New Window( "ROC",
+	Outline Box( "ROC Curve Analysis",
+		H List Box(
+			Outline Box( "ROC Curves and Confidence Bands",
+				H List Box(
+					V List Box(
+						gr1 = Graph Box(
+							Title( "Graph of ROC curves" ),
+							FrameSize( 350, 350 ),
+							X Scale( -0.01, 1 ),
+							Y Scale( 0, 1.01 ),
+							XAxis( Show Major Grid( 1 ) ),
+							YAxis( Show Major Grid( 1 ) ),
+							XName( "False Positive" ),
+							YName( "True Positive" ),
+							Transparency( 0.25 );
+							Line( Line Style( 0 ), {0, 0}, {1, 1} );
+							Transparency( 1 );
+				
+				// calculate cutoff values
+				
+							calculate_cutoffs( w_fp, w_fn );
+				
+				// fill confidence intervals 
+							For( m = 1, m <= N_ROC_cols, m++,
+								Pen Color( m + 3 );
+								Line( {0.3, 0.3 - m / 10}, {0.4, 0.3 - m / 10} );
+								Text( {0.45, 0.3 - m / 10}, col_names[m] );
+								Line( Line Style( 0 ), FP[m, 0], TP[m, 0] );
+					
+								If( show_bino,
+									Line(
+										Line Style( 1 ),
+										lower_bi_x[10 * (m - 1) + alpha_proc, 0],
+										upper_bi_y[10 * (m - 1) + alpha_proc, 0]
+									);
+									Line(
+										Line Style( 1 ),
+										upper_bi_x[10 * (m - 1) + alpha_proc, 0],
+										lower_bi_y[10 * (m - 1) + alpha_proc, 0]
+									);
+								);
+				
+								If( show_boot,
+									Line( xvalues, lower[0, 10 * (m - 1) + alpha_proc] );
+									Line( xvalues, upper[0, 10 * (m - 1) + alpha_proc] );
+									Fill Color( m + 3 );
+									Transparency( 0.25 );
+									For( i = 1, i <= 100, i++,
+										Polygon(
+											{xvalues[i], lower[i, 10 * (m - 1) + alpha_proc]},
+											{xvalues[i + 1], lower[i + 1, 10 * (m - 1) + alpha_proc]},
+											{xvalues[i + 1], upper[i + 1, 10 * (m - 1) + alpha_proc]},
+											{xvalues[i], upper[i, 10 * (m - 1) + alpha_proc]},
+											{xvalues[i], lower[i, 10 * (m - 1) + alpha_proc]}
+										)
+									);
+									Transparency( 1 );
+								);
+								If( show_kolmo,
+									Line( Line Style( 1 ), lower_x[m, 0], lower_y[m, 0] );
+									Line( Line Style( 1 ), upper_x[m, 0], upper_y[m, 0] );
+								);
+								Line( Line Style( 0 ), {0, b_new[m]}, {xdot[m], 1} );
+								Marker Size( 4 );
+								Marker( m + 2, {One_spec_new[m], sens_new[m]} );
+							);
+						),
+						Outline Box( " Confidence Intervals ",
+							H List Box(
+								Button Box( "Bootstrap",
+									If( show_boot,
+										show_boot = 0,
+										show_boot = 1
+									);
+									gr1 << reshow;
+					//		gr2 << reshow;
+								),
+								Button Box( "Pointwise",
+									If( show_bino,
+										show_bino = 0,
+										show_bino = 1
+									);
+									gr1 << reshow;
+				//			gr2 << reshow;
+								),
+								Button Box( "Simultaneous",
+									If( show_kolmo,
+										show_kolmo = 0,
+										show_kolmo = 1
+									);
+									gr1 << reshow;
+		//					gr2 << reshow;
+								),
+								Text Box( "Alpha: " ),
+								Slider Box(
+									0.01,
+									0.1,
+									alpha_slider,
+									alpha_slider = Round( alpha_slider, 2 );
+									alpha_char = Char( alpha_slider );
+									alpha_box << set Text( alpha_char );
+									alpha_proc = Floor( 100 * Num( alpha_char ) );
+									gr1 << reshow;
+		//					gr2 << reshow;
+								),
+								alpha_box = Text Edit Box( alpha_char,
+									<<Script(
+										alpha_char = alpha_box << get Text;
+										alpha_proc = Floor( 100 * Num( alpha_char ) );
+										alpha_slider = Num( alpha_char );
+										gr1 << reshow;
+				//				gr2 << reshow;
+									)
+								)
+							),        
+
+						)
+					)
+				)
+			),
+			Outline Box( "ROC Statistics",
+				V List Box(
+					Outline Box( "General Parameters",
+						If( Contains( sign, 1 ) > 0,
+							Text Box(
+								"Warning: true positives have lower index mean than " ||
+								"true negatives for the following curves: "
+							)
+						),
+						na_co = "";
+						For( bla = 1, bla <= N_ROC_cols, bla++,
+							If( sign[bla] == 1,
+								na_co = na_co || "  " || col_names[bla]
+							)
+						);,
+						Text Box( na_co ),
+						If( Is String( pos_lev ),
+							,
+							pos_lev = Char( pos_lev )
+						),
+						Table Box(
+							Number Col Box( "N", {N} ),
+							Number Col Box( "Positives", {sum_TP} ),
+							Number Col Box( "Negatives", {sum_TN} ),
+							Number Col Box( "Repetitions", {rep} ),
+							String Col Box( "positive Level", {pos_lev} )
+						)
+					),
+					Outline Box( "Area under the Curve (95 % CI)",
+						Table Box(
+							String Col Box( "Curve", col_names ),
+							Number Col Box( "AUC", AUC ),
+							Number Col Box( "CI low", AUC_bi_lo ),
+							Number Col Box( "CI up", AUC_bi_up ),     
+						//Number Col Box( "CI low Binomial", AUC_bi_lo ),
+							//Number Col Box( "CI up Binomial", AUC_bi_up ),   
+							//Number Col Box( "Signif. Prob", AUC_sig )
+						),        
+
+					),
+					Outline Box( "Tests for Equality (Metz, Wang, Kronman)",   
+/*	H List Box(
+		Text Box( "Compare TPR at fixed FPR of " ),
+		teb_fpr = Text Edit Box( fpr_test_char,
+			<<Script(
+				teb_fpr_char = teb_fpr << get Text;
+				fpr_test = Num( fpr_test_char );
+			)
+		)
+	),*/
+						Table Box(
+							String Col Box( "Null Hypothesis", string_null_hypos ),
+							Number Col Box( "Test Statistic", {equal_stat} ),
+							Number Col Box( "p-value", {equal_p} )
+						)
+					),
+					Outline Box( "Cutoff Points Diagonal",
+						Table Box(
+							String Col Box( "Curve", col_names ),
+							Number Col Box( "Index Value", value_diag ),
+							Number Col Box( "1-Specificity", One_spec_diag ),
+							Number Col Box( "Sensitivity", sens_diag ),
+							Number Col Box( "Slope", slope ),
+							Number Col Box( "Row", index_diag )
+						)
+					),
+					Outline Box( "Cutoff Points Weighted",
+						tb_weighted = Table Box(
+							String Col Box( "Curve", col_names ),
+							col1 = Number Col Box( "Index Value", value_new ),
+							col2 = Number Col Box( "1-Specificity", One_spec_new ),
+							col3 = Number Col Box( "Sensitivity", sens_new ),
+							col4 = Number Col Box( "Slope", slope ),
+							col5 = Number Col Box( "Row", index_new )
+						)
+					),
+					Outline Box( "Weights",
+						Button Box( "Reset weights to 1",
+							w_fp_rel = 1;
+							w_fn_rel = 1;
+
+							If(
+								sum_TN >= sum_TP,
+									w_fp = 1;
+									w_fn = sum_TN / sum_TP * w_fp_rel / w_fn_rel;,
+								w_fn = 1;
+								w_fp = sum_TP / sum_TN * w_fn_rel / w_fp_rel;,
+							);
+					
+							gr1 << reshow;
+		//					gr2 << reshow;
+							renew_weights( w_fp_rel, w_fn_rel );
+						),
+						H List Box(
+							V List Box(
+								Text Box( "Relative weights" ),
+								H List Box(
+									Slider Box(
+										1,
+										10,
+										w_fp_rel,
+										gr1 << reshow;
+		//						gr2 << reshow;
+										renew_weights( w_fp_rel, w_fn_rel );
+									),
+									Text Box( " Factor FP rel: 1 < " ),
+									teb_fp = Text Edit Box( w_fp_char,
+										<<Script(
+											w_fp_char = teb_fp << get Text;
+											w_fp_rel = Num( w_fp_char );
+											calculate_cutoffs( w_fp, w_fn );
+											renew_weights( w_fp_rel, w_fn_rel );
+										)
+									),
+									Text Box( " < 10" ),                            
+
+								),
+								H List Box(
+									Slider Box(
+										1,
+										10,
+										w_fn_rel,
+										gr1 << reshow;
+			//					gr2 << reshow;
+										renew_weights( w_fp_rel, w_fn_rel );
+									),                             
+
+									Text Box( " Factor FN rel: 1 < " ),
+									teb_fn = Text Edit Box( w_fn_char,
+										<<Script(
+											w_fn_char = teb_fn << get Text;
+											w_fn_rel = Num( w_fn_char );
+											gr1 << reshow;
+											show(w_fp_rel, w_fn_rel);
+											renew_weights( w_fp_rel, w_fn_rel );
+											calculate_cutoffs( w_fp, w_fn );
+										)
+									),
+									Text Box( " < 10" ),         
+
+								)
+							),
+							V List Box(
+								Text Box( "Absolute weights" ),
+								H List Box(
+									tb_rel = Table Box(
+										rel_col1 = Number Col Box( "Weigth FP abs.", {w_fp} ),
+										rel_col2 = Number Col Box( "Weigth FN abs.", {w_fn} ),
+										rel_col3 = Number Col Box( "Slope", {slope[1]} )
+									),    
+
+								)
+							)
+						),          
+
+					), 
+
+				)
+			),
+			If( -1 < 0,      // condition for pAUC display
+				Outline Box( "Partial Area Under the Curve",
+					V List Box(          
+			// pAUC plot
+						gr3 = Graph Box(
+							Title( "pAUC ROC curve" ),
+							FrameSize( 250, 250 ),
+							X Scale( -0.01, 1 ),
+							Y Scale( 0, 1.01 ),
+							XAxis( Show Major Grid( 1 ) ),
+							YAxis( Show Major Grid( 1 ) ),
+							XName( "False Positive" ),
+							YName( "True Positive" ),
+							If( N_Roc_Cols > 1,
+								Transparency( 0.5 );
+								Pen Color( "Black" );
+							//If( (pAUC_lo[1] < pAUC_up[2] < pAUC_up[1]) | (pAUC_lo[1] < pAUC_lo[2] < pAUC_up[1]),
+								If( (pAUC_compare_p >= 0.05),
+									Fill Color( "Black" ),
+									Fill Color( "Red" )
+								);
+								If(
+									AUC[1] > AUC[2],
+										gr = 1;kl = 2 ,
+									gr = 2; kl = 1
+								);				
+								For( i = 2, i <= N, i++,
+									If( (x_1 < FP[gr, i] <= x_2),
+										Polygon(
+											{FP[gr, i], TP[gr, i]},
+											{FP[gr, i + 1], TP[gr, i + 1]},
+											{FP[gr, i + 1], 0},
+											{FP[gr, i], 0},
+											{FP[gr, i], TP[gr, i]}
+										)
+									)
+								);
+								Transparency( 1 );
+								Fill Color( "White" );
+								For( i = 2, i <= N, i++,
+									If( (x_1 < FP[kl, i] <= x_2),
+										Polygon(
+											{FP[kl, i], TP[kl, i]},
+											{FP[kl, i + 1], TP[kl, i + 1]},
+											{FP[kl, i + 1], 0},
+											{FP[kl, i], 0},
+											{FP[kl, i], TP[kl, i]}
+										)
+									)
+								);
+							);
+							Transparency( 0.25 );
+							Line( Line Style( 0 ), {0, 0}, {1, 1} );
+							Transparency( 1 );
+							For( m = 1, m <= N_ROC_cols, m++,
+								Pen Color( m + 3 );
+								//Line( {0.5, 0.6 - m / 10}, {0.6, 0.6 - m / 10} );
+								//Text( {0.65, 0.6 - m / 10}, col_names[m] );
+								Line( Line Style( 0 ), FP[m, 0], TP[m, 0] );
+//						Line(xvalues, upper[0, 10 * (m - 1) + 5]);
+								//						Line(xvalues, lower[0, 10 * (m - 1) + 5]);
+							);
+							Handle(
+								e_one,
+								b_pos,
+								e_one = x;
+								e_one = Max( e_one, 0 );
+								e_one = Min( e_one, 1 );
+								w_fpr1_char = Char( e_one );
+								teb_fpr1 << set Text( w_fpr1_char );
+								renew( e_one, e_two );
+							);
+							Line( {e_one, 0}, {e_one, 1} );
+							Handle(
+								e_two,
+								b_pos,
+								e_two = x;
+								e_two = Max( e_two, 0 );
+								e_two = Min( e_two, 1 );
+								w_fpr2_char = Char( e_two );
+								teb_fpr2 << set Text( w_fpr2_char );
+								renew( e_one, e_two );
+							);
+							Line( {e_two, 0}, {e_two, 1} );
+						), 
+						Outline Box( "False Positive Rates",
+							V List Box(
+								H List Box(
+									Text Box( " Partial Area between FPR 1 = " ),
+									teb_fpr1 = Text Edit Box( w_fpr1_char,
+										<<Script(
+											w_fpr1_char = teb_fpr1 << get Text;
+											w_fpr1 = Num( w_fpr1_char );
+											w_fpr1 = Max( w_fpr1, 0 );
+											w_fpr1 = Min( w_fpr1, 1 );
+											e_one = w_fpr1;
+											w_fpr1_char = Char( e_one );
+											teb_fpr1 << set Text( w_fpr1_char );
+											renew( e_one, e_two );
+										)
+									),
+									Text Box( " and FPR 2 = " ),
+									teb_fpr2 = Text Edit Box( w_fpr2_char,
+										<<Script(
+									//Print( teb_fpr2 << Get Text );
+											w_fpr2_char = teb_fpr2 << get Text;
+											w_fpr2 = Num( w_fpr2_char );
+											w_fpr2 = Max( w_fpr2, 0 );
+											w_fpr2 = Min( w_fpr2, 1 );
+											e_two = w_fpr2;
+											w_fpr2_char = Char( e_two );
+											teb_fpr2 << set Text( w_fpr2_char );
+											renew( e_one, e_two );
+										)
+									)
+								)
+							);
+						
+						),
+						Outline Box( "partial AUC (McClish)",
+							tb_weig = Table Box(
+								String Col Box( "Curve", col_names ),
+								tb_col1 = Number Col Box( "pAUC rel", pAUC_rel ),
+								tb_col2 = Number Col Box( "pAUC abs", pAUC_abs ),
+								tb_col3 = Number Col Box( "CI low", pAUC_lo ),
+								tb_col4 = Number Col Box( "CI up", pAUC_up ),   
+							//tb_col5 = Number Col Box( "Signif. Prob", pAUC_sig )
+
+							)
+						),
+						If( N_ROC_cols > 1,
+							Outline Box( "Test equality of pAUC",
+								tb_pAUC = Table Box(
+									String Col Box( "Null Hypothesis", {"pAUC of both curves equal"} ),
+									tb_pcol1 = Number Col Box( "Test Statistic", {Abs( pAUC_compare_stats )} ),
+									tb_pcol2 = Number Col Box( "p-value", {pAUC_compare_p} )
+								)
+							)
+						) //    */
+					)
+				)
+			)
+		),
+		Panel Box( "",
+			H List Box(
+				Button Box( "Documentation (Web)", Web( "www.statcon.de" ) ),
+				Button Box( "www.statcon.de", Web( "www.statcon.de" ) ),
+				Button Box( "Contact us!",
+					contact_win = New Window( "Contact Information",
+						Border Box(
+							Left( 10 ),
+							Panel Box( "",
+								Text Box(
+									"If you have any comment or questions " ||
+									"regarding this script, JMP in general or statistics or " ||
+									"if you are interested in a training in statistics or statistic " ||
+									"software, please contact us using the following information:"
+								)
+							)
+						),
+						Outline Box( "Contact by Phone or E-Mail",                
+						
+							Text Box( " " ),
+							Text Box( "E-Mail: info@statcon.de" ),
+							Text Box( " " ),
+							Text Box( "Phone :+49 5542 93300" ),
+							Text Box( " " ),
+							Text Box( "STATCON" ),
+							Text Box( "Schulstr. 2" ),
+							Text Box( "37213 Witzenhausen" ),
+							Text Box( "Germany" ),
+							Text Box( " " ),
+							Text Box( "Thank you for your interest. " )
+						),
+						Outline Box( "Contact by Internet",
+							Text Box( " " ),
+							V List Box(
+								Text Box(
+									"Please use our contact form to get in touch with us " || "or visit our website!
+									"
+								),
+								H List Box(
+									Button Box( "Contact Form", Web( "www.statcon.de" ) ),
+									Text Box( "  " ),
+									Button Box( "Website", Web( "www.statcon.de" ) )
+								),
+								Text Box( " " ),
+								Text Box( "Thank you for your interest. " )
+							),              
+
+						),
+						Border Box( Top( 15 ), Button Box( "Close this window", contact_win << close window ) )
+					)
+				),
+				Button Box( "License and Disclaimer",
+					lic_disc_win = New Window( "License and Disclaimer",
+						Outline Box( "Copyright",
+							Text Box( " " ),
+							Text Box( "Copyright © 2007 by STATCON, Schulstr. 2, 37213 Witzenhausen, Germany." ),
+							Text Box( "All rights reserved. " ),
+							Text Box( " " )
+						),
+						Outline Box( "License and Disclaimer",
+							Text Box( " " ),
+							Text Box( "Disclaimer by STATCON - License Agreement" ),
+							Text Box( " " ),
+							Text Box(
+								"STATCON IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE " ||
+								"INCLUDED WITH THIS AGREEMENT (CODE) ON AN AS IS BASIS, " ||
+								"AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. " ||
+								"BY USING THE CODE, YOU AGREE TO THESE TERMS.  YOUR USE OF " ||
+								"THE CODE IS AT YOUR OWN RISK. STATCON MAKES NO REPRESENTATION OR " ||
+								"WARRANTY, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, " ||
+								"WARRANTIES OF MERCHANTABILITY, " ||
+								"FITNESS FOR A PARTICULAR PURPOSE, NONINFRINGEMENT AND TITLE, " || "WITH RESPECT TO THE CODE."
+							),                   
+
+							Text Box(
+								"The Code has not necessarily been tested.  Accordingly, STATCON " ||
+								"makes no representation or warranty that the Code " ||
+								"will operate error-free. STATCON is under no obligation " ||
+								"to maintain or support the Code.
+							"
+							),                  
+
+							Text Box(
+								"STATCON shall not be liable to you or any third party for any " ||
+								"general, special, direct, indirect, consequential, " ||
+								"incidental or other damages whatsoever arising out of or " ||
+								"related to your use or inability to use the Code, " ||
+								"even if STATCON has been advised of the possibility of such damages."
+							)
+						),
+						Button Box( "Close this window", lic_disc_win << close window )
+					),         
+
+				)
+			),
+			Text Box( "Copyright STATCON 2007" ),
+
+		)
+	)
+);
+
+// output table 
+/*
+bdt = New Table( "classification results" );
+For( i = 1, i <= N_ROC_cols, i++,
+	bdt << New Column( "1-Specificity " || col_names[i] );
+	bdt << New Column( "Sensitivity " || col_names[i] );
+	bdt << New Column( "Sens-(1-Spec) " || col_names[i] );
+	bdt << New Column( "True Pos " || col_names[i] );
+	bdt << New Column( "True Neg " || col_names[i] );
+	bdt << New Column( "False Pos " || col_names[i] );
+	bdt << New Column( "False Neg " || col_names[i] );
+	bdt << New Column( "Sorted " || col_names[i], set values( sorted_data[0, i] ) );
+	Column( 8 * (i - 1) + 1 ) << set values( FP[i, 0] );
+	Column( 8 * (i - 1) + 2 ) << set values( TP[i, 0] );
+	Column( 8 * (i - 1) + 3 ) << set values( TP[i, 0] - FP[i, 0] );
+	Column( 8 * (i - 1) + 4 ) << set values( TP[i, 0] * sum_TP );
+	Column( 8 * (i - 1) + 5 ) << set values( sum_TN - FP[i, 0] * sum_TN );
+	Column( 8 * (i - 1) + 6 ) << set values( FP[i, 0] * sum_TN );
+	Column( 8 * (i - 1) + 7 ) << set values( sum_TP - TP[i, 0] * sum_TP );
+);
+Close( bdt, nosave );
+*/
